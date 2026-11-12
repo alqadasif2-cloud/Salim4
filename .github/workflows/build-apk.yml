@@ -50,10 +50,26 @@ jobs:
 
       - name: 3. Ensure Gradle Wrapper & Executable Permissions
         run: |
+          if [ ! -f gradlew ]; then
+            echo "gradlew not found in workspace, downloading official Gradle 8.7 wrapper script..."
+            curl -s -L -o gradlew https://raw.githubusercontent.com/gradle/gradle/v8.7.0/gradlew
+          fi
           chmod +x gradlew
+          mkdir -p gradle/wrapper
+          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
+            echo "Creating gradle-wrapper.properties..."
+            cat << 'EOF' > gradle/wrapper/gradle-wrapper.properties
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+EOF
+          fi
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             echo "Downloading official gradle-wrapper.jar..."
-            mkdir -p gradle/wrapper
             curl -s -L -o gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.7.0/gradle/wrapper/gradle-wrapper.jar
           fi
           ls -la gradlew gradle/wrapper/
