@@ -1,0 +1,173 @@
+{
+  "users": {
+    "1": {
+      "id": 1,
+      "username": "Salim",
+      "displayName": "القائد Salim",
+      "passwordHash": "df296d8ba60ffd5550bb7df6991cc9ce6e923cf827a63211da62849409d0d42e",
+      "salt": "6494a3847d9d9c8e05864d11a5e37f3f",
+      "role": "owner",
+      "avatarUrl": "/logo.png",
+      "warningsCount": 0,
+      "createdAt": 1794462199616,
+      "updatedAt": 1794462199616
+    },
+    "2": {
+      "id": 2,
+      "username": "testtrader",
+      "displayName": "متداول تجريبي",
+      "passwordHash": "83d08cca8f458b9d3976a55e655ed9eb44d07244c39d5b5dc886f36961f3c588",
+      "salt": "6d0b251af9b0ebabbde9e02be4dbbac8",
+      "role": "user",
+      "avatarUrl": null,
+      "warningsCount": 0,
+      "createdAt": 1794468673955,
+      "updatedAt": 1794468673955
+    },
+    "3": {
+      "id": 3,
+      "username": "trader3",
+      "displayName": "المتداول الثالث",
+      "passwordHash": "ee7116c5381772347f5dec6a80ff3e2d1faf41b210e7e223805d21f7f8cf20dc",
+      "salt": "f861c9e6eac51eb2777574117490423c",
+      "role": "user",
+      "avatarUrl": null,
+      "warningsCount": 0,
+      "createdAt": 1794468738496,
+      "updatedAt": 1794468738496
+    },
+    "4": {
+      "id": 4,
+      "username": "trader4",
+      "displayName": "متداول جديد 4",
+      "passwordHash": "3516740180d2357561f0a7d0a366d5ee7f8efd46794e0fc532fd5429e148fae7",
+      "salt": "903a19beb2a7832ba580bc4dd3ef2127",
+      "role": "user",
+      "avatarUrl": null,
+      "warningsCount": 0,
+      "createdAt": 1794469117647,
+      "updatedAt": 1794469117647
+    },
+    "76": {
+      "id": 76,
+      "username": "Salim0",
+      "displayName": "Salim0",
+      "passwordHash": "d7ca78bdb10d17ad748440ceb05b1fa7b9e978199d2771645e45292d61666367",
+      "salt": "76767676767676767676767676767676",
+      "role": "owner",
+      "isRestrictedAdmin": true,
+      "avatarUrl": "/logo.png",
+      "warningsCount": 0,
+      "createdAt": 1794462199616,
+      "updatedAt": 1794462199616
+    }
+  },
+  "channels": {
+    "general_trading": {
+      "id": "general_trading",
+      "name": "📊 ديوانية التداول العامة",
+      "description": "قناة النقاشات العامة وتحليلات الأسواق الفورية والدردشة بين الأعضاء",
+      "isPrivate": false,
+      "isOpenPublic": true,
+      "visibility": "public",
+      "allowedMemberIds": [
+        1
+      ],
+      "memberIds": [
+        1
+      ],
+      "createdAt": 1794462199616,
+      "updatedAt": 1794462199616,
+      "displayMemberCount": 1
+    },
+    "signals_vip": {
+      "id": "signals_vip",
+      "name": "👑 قناة Salim VIP الخاصة",
+      "description": "توصيات التداول الحصرية وإشارات الدخول والخروج الخاصة بالمشتركين",
+      "isPrivate": true,
+      "isOpenPublic": false,
+      "visibility": "visible",
+      "allowedMemberIds": [
+        1
+      ],
+      "memberIds": [
+        1
+      ],
+      "createdAt": 1794462199616,
+      "updatedAt": 1794462199616,
+      "displayMemberCount": 1
+    }
+  },
+  "channelMessages": {
+    "general_trading": [
+      {
+        "id": "msg_1794469134819_z27gh",
+        "channelId": "general_trading",
+        "senderId": 1,
+        "senderName": "Salim",
+        "senderRole": "owner",
+        "text": "مرحباً بكم في ديوانية التداول العامة",
+        "imageUrl": null,
+        "audioUrl": null,
+        "fileUrl": null,
+        "fileName": null,
+        "replyTo": null,
+        "timestamp": 1794469134819,
+        "pinned": false,
+        "reactions": {}
+      }
+    ]
+  },
+  "privateMessages": {
+    "1_2": [
+      {
+        "id": "pm_1794468847480_4xdxg",
+        "conversationId": "1_2",
+        "senderId": 1,
+        "receiverId": 2,
+        "senderName": "Salim",
+        "senderRole": "owner",
+        "text": "أهلاً بك في منصة سالم",
+        "imageUrl": null,
+        "audioUrl": null,
+        "fileUrl": null,
+        "fileName": null,
+        "replyTo": null,
+        "timestamp": 1794468847480,
+        "pinned": false,
+        "reactions": {},
+        "participantIds": [
+          1,
+          2
+        ],
+        "participantId": 2
+      }
+    ]
+  },
+  "challenges": {},
+  "trades": {},
+  "appUpdates": {
+    "latest": {
+      "versionCode": 16,
+      "versionName": "1.3.2",
+      "title": "تحديث Salim الرسمي v1.3.2",
+      "description": "إصدار Salim 1.3.2 مستقر ومحدّث مع ربط سحابي كامل بـ Firebase.",
+      "downloadUrl": "",
+      "storageSource": "firebase_storage",
+      "storagePath": "updates/Salim-v1.3.2.apk",
+      "fileName": "Salim-v1.3.2.apk",
+      "fileSize": 28412000,
+      "sha256": "a57242c83822cee194df80bc87c5f07cf44b91ca52999337a6ba5d87cd71bcb6",
+      "isMandatory": false,
+      "isActive": true,
+      "isHidden": false,
+      "distributionStatus": "enabled",
+      "publishedAt": 1794462199616,
+      "publishedBy": "Salim",
+      "createdAt": 1794462199616,
+      "updatedAt": 1794462199616
+    }
+  },
+  "appUpdatesHistory": [],
+  "globalDistributionEnabled": true
+}
