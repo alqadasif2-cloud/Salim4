@@ -89,13 +89,13 @@ jobs:
         if: ${{ github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both' || github.event_name != 'workflow_dispatch' }}
         run: |
           echo "Building Release APK with Gradle 8.7..."
-          ./gradlew assembleRelease -Pandroid.useAndroidX=true -x test --no-daemon --stacktrace
+          ./gradlew assembleRelease -Pandroid.useAndroidX=true -Pandroid.enableJetifier=false -x test --no-daemon --stacktrace
 
       - name: 6. Build Debug APK
         if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both' }}
         run: |
           echo "Building Debug APK with Gradle 8.7..."
-          ./gradlew assembleDebug -Pandroid.useAndroidX=true -x test --no-daemon --stacktrace
+          ./gradlew assembleDebug -Pandroid.useAndroidX=true -Pandroid.enableJetifier=false -x test --no-daemon --stacktrace
 
       - name: 7. Collect and Verify APK Outputs
         run: |
