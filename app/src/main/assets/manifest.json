@@ -2,7 +2,7 @@
   "name": "Salim - Trading Challenge Tracker",
   "short_name": "Salim",
   "description": "منصة سالم لتتبع تحديات التداول وقنوات التوصيات وإدارة المحطات المالية والدردشة الفورية",
-  "start_url": "/index.html",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#050811",
   "theme_color": "#050811",
