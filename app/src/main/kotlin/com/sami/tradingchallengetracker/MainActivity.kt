@@ -570,7 +570,10 @@ class MainActivity : ComponentActivity() {
         }
 
         @JavascriptInterface
-        fun getRemoteServerUrl(): String = prefs.getString("remote_server_url", "") ?: ""
+        fun getRemoteServerUrl(): String {
+            val saved = prefs.getString("remote_server_url", "")?.trim() ?: ""
+            return if (saved.isNotEmpty()) saved else "https://ais-pre-huto3ibbtc5qeczlmy4f43-497069235999.europe-west2.run.app"
+        }
 
         @JavascriptInterface
         fun setRemoteServerUrl(url: String?) {

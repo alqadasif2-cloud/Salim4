@@ -28,14 +28,14 @@ import {
   reconcileSupabaseData,
 } from './supabase.ts';
 
+import { createWebSdkFirestoreClient } from './firestoreAdapter.ts';
+
 /**
  * Google Cloud Firestore Persistence Layer for Salim Full-Stack Application
- * Targeting project: gen-lang-client-0610758071
- * Database ID: ai-studio-c1d1b606-9578-42a6-b7b2-17faaec47f72
  */
 
-const SHARED_FIREBASE_PROJECT_ID = 'gen-lang-client-0610758071';
-const SHARED_FIRESTORE_DB_ID = 'ai-studio-c1d1b606-9578-42a6-b7b2-17faaec47f72';
+const SHARED_FIREBASE_PROJECT_ID = 'gen-lang-client-0469226875';
+const SHARED_FIRESTORE_DB_ID = 'ai-studio-salimtradingchal-50c5f03a-26a5-4ffd-ab5f-fd003f2fd93b';
 
 function loadAppletConfig(): Record<string, string> {
   try {
@@ -65,7 +65,7 @@ function resolveDatabaseId(): string {
     envDb.includes('.firebasestorage.') ||
     envDb.includes('.appspot.')
   ) {
-    return SHARED_FIRESTORE_DB_ID;
+    return appletConfig.firestoreDatabaseId || SHARED_FIRESTORE_DB_ID;
   }
   return envDb;
 }
@@ -73,7 +73,7 @@ function resolveDatabaseId(): string {
 export const projectId = resolveProjectId();
 export const databaseId = resolveDatabaseId();
 
-// 1. Initialize Google Cloud Firestore Server Client (with graceful local fallback)
+// 1. Initialize Google Cloud Firestore Server Client (Admin SDK or Firebase Web SDK adapter)
 let firestoreClient: any = null;
 let firestoreInitError: string | null = null;
 
@@ -103,7 +103,10 @@ try {
     firestoreClient = new FirestoreClass(options);
     console.log(`[Salim DB] Google Cloud Firestore client initialized for project: ${projectId}, database: ${databaseId}`);
   } else {
-    console.log('[Salim DB] Running with local persistent disk store (persistent_store.json)');
+    firestoreClient = createWebSdkFirestoreClient();
+    if (!firestoreClient) {
+      console.log('[Salim DB] Running with local persistent disk store (persistent_store.json)');
+    }
   }
 } catch (err: any) {
   firestoreInitError = err?.message || String(err);
@@ -151,13 +154,13 @@ export function handleFirestoreQuotaOrError(err: any, caller: string, collection
 // ============================================================================
 export const userCache = new Map<number, { user: UserRecord; cachedAt: number }>();
 export const usernameCache = new Map<string, { user: UserRecord; cachedAt: number }>();
-const USER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const USER_CACHE_TTL_MS = 10 * 1000; // 10 seconds
 
 let cachedChannels: { channels: ChannelRecord[]; cachedAt: number } | null = null;
-const CHANNELS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CHANNELS_CACHE_TTL_MS = 5 * 1000; // 5 seconds
 
 let cachedAllUsers: { users: Omit<UserRecord, 'passwordHash' | 'salt'>[]; cachedAt: number } | null = null;
-const ALL_USERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const ALL_USERS_CACHE_TTL_MS = 3 * 1000; // 3 seconds
 
 const channelMessagesCache = new Map<string, { messages: ChannelMessage[]; cachedAt: number }>();
 const CHANNEL_MESSAGES_TTL_MS = 60 * 1000; // 60 seconds
@@ -256,11 +259,25 @@ export function generateSalt(): string {
 
 export function verifyUserPassword(password: string, hash: string, salt: string): boolean {
   try {
+    if (!hash || !salt) return false;
     const calculated = hashPasswordWithSalt(password, salt);
     return crypto.timingSafeEqual(Buffer.from(calculated, 'hex'), Buffer.from(hash, 'hex'));
   } catch {
     return false;
   }
+}
+
+export function verifyUserCredential(password: string, user: Partial<UserRecord> | null | undefined): boolean {
+  if (!user) return false;
+  const cleanPass = String(password ?? '').trim();
+  if (!cleanPass) return false;
+  if (typeof user.password === 'string' && user.password.trim() === cleanPass) {
+    return true;
+  }
+  if (user.passwordHash && user.salt) {
+    return verifyUserPassword(cleanPass, user.passwordHash, user.salt);
+  }
+  return false;
 }
 
 // ============================================================================
@@ -325,42 +342,53 @@ export interface UserRecord {
   id: number;
   username: string;
   displayName: string;
+  password?: string;
   passwordHash: string;
   salt: string;
   role: 'owner' | 'moderator' | 'user' | 'guest';
   avatarUrl?: string | null;
   warningsCount?: number;
+  verifiedChannels?: Record<string, string>;
   isRestrictedAdmin?: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
 export async function getUserById(userId: number): Promise<UserRecord | null> {
-  // User 76 (restricted admin Salim) shortcut
-  if (userId === 76 && diskStore.users['76']) {
-    return diskStore.users['76'];
-  }
-
-  // 0. Check in-memory cache first (ZERO network reads!)
+  // 0. Check in-memory cache first
   const cached = userCache.get(userId);
   if (cached && Date.now() - cached.cachedAt < USER_CACHE_TTL_MS) {
     firestoreMetrics.recordRead('getUserById', 'users', 'cache_hit', 1, true);
     return cached.user;
   }
 
-  // If in circuit breaker or rate limit, use persistent disk store directly
-  if (isFirestoreRestBackoffActive()) {
-    const diskUser = diskStore.users[String(userId)] || null;
-    if (diskUser) {
-      userCache.set(userId, { user: diskUser, cachedAt: Date.now() });
-      firestoreMetrics.recordRead('getUserById', 'users', 'cache_hit', 1, true);
-    }
-    return diskUser;
-  }
-
-  // 1. Try Google Cloud Firestore
-  if (firestoreClient) {
+  // 1. Try Google Cloud Firestore (community_users first, then users)
+  if (firestoreClient && !isFirestoreRestBackoffActive()) {
     try {
+      const commSnap = await firestoreClient.collection('community_users').doc(String(userId)).get();
+      if (commSnap.exists) {
+        const raw = commSnap.data() as any;
+        const u: UserRecord = {
+          id: Number(raw.id || userId),
+          username: String(raw.username || ''),
+          displayName: String(raw.displayName || raw.username || ''),
+          password: typeof raw.password === 'string' ? raw.password : undefined,
+          passwordHash: String(raw.passwordHash || ''),
+          salt: String(raw.salt || ''),
+          role: raw.role || 'user',
+          avatarUrl: raw.avatarUrl || null,
+          warningsCount: Number(raw.warningsCount || 0),
+          verifiedChannels: raw.verifiedChannels && typeof raw.verifiedChannels === 'object' ? raw.verifiedChannels : {},
+          isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || Number(raw.id || userId) === 76),
+          createdAt: Number(raw.createdAt || Date.now()),
+          updatedAt: Number(raw.updatedAt || Date.now()),
+        };
+        userCache.set(userId, { user: u, cachedAt: Date.now() });
+        diskStore.users[String(userId)] = u;
+        firestoreMetrics.recordRead('getUserById', 'community_users', 'getDoc', 1, false);
+        return u;
+      }
+
       const snap = await firestoreClient.collection('users').doc(String(userId)).get();
       if (snap.exists) {
         const u = snap.data() as UserRecord;
@@ -387,52 +415,6 @@ export async function getUserById(userId: number): Promise<UserRecord | null> {
     }
   }
 
-  // 2.5 Cloud Firestore REST fallback on `community_users/{userId}` (critical for cold-start Cloud Run containers)
-  if (userId > 0 && !isFirestoreRestBackoffActive()) {
-    try {
-      const dbSegment = encodeURIComponent(databaseId || '(default)');
-      const restUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${dbSegment}/documents/community_users/${encodeURIComponent(String(userId))}`;
-      const resp = await fetch(restUrl, {
-        method: 'GET',
-        headers: { 'Cache-Control': 'no-cache' },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (resp.status === 429) {
-        setFirestoreRestBackoff(FIRESTORE_BACKOFF_DURATION_MS);
-      } else if (resp.ok) {
-        const docJson: any = await resp.json();
-        const f = docJson?.fields;
-        if (f && f.username?.stringValue) {
-          const uname = String(f.username.stringValue);
-          const rawRole = String(f.role?.stringValue || 'user');
-          const resolvedRole: UserRecord['role'] =
-            userId === 1 || rawRole === 'owner'
-              ? 'owner'
-              : rawRole === 'moderator'
-                ? 'moderator'
-                : rawRole === 'guest'
-                  ? 'guest'
-                  : 'user';
-          const cloudUser: UserRecord = {
-            id: userId,
-            username: uname,
-            displayName: String(f.displayName?.stringValue || uname || 'متداول'),
-            passwordHash: String(f.passwordHash?.stringValue || ''),
-            salt: String(f.salt?.stringValue || ''),
-            role: resolvedRole,
-            avatarUrl: f.avatarUrl?.stringValue || null,
-            warningsCount: f.warningsCount?.integerValue ? Number(f.warningsCount.integerValue) : 0,
-            createdAt: f.createdAt?.integerValue ? Number(f.createdAt.integerValue) : Date.now(),
-            updatedAt: f.updatedAt?.integerValue ? Number(f.updatedAt.integerValue) : Date.now(),
-          };
-          userCache.set(userId, { user: cloudUser, cachedAt: Date.now() });
-          firestoreMetrics.recordRead('getUserById', 'community_users', 'getDoc', 1, false);
-          return cloudUser;
-        }
-      }
-    } catch {}
-  }
-
   // 3. Persistent disk fallback
   const diskFallback = diskStore.users[String(userId)] || null;
   if (diskFallback) {
@@ -442,6 +424,7 @@ export async function getUserById(userId: number): Promise<UserRecord | null> {
 }
 
 export async function getUserByUsername(username: string): Promise<UserRecord | null> {
+  await ensureBaselineCloudSeed();
   const clean = username.trim().toLowerCase();
 
   // If username matches owner aliases, immediately resolve owner user (ID 1)
@@ -456,28 +439,46 @@ export async function getUserByUsername(username: string): Promise<UserRecord | 
     if (owner2) return owner2;
   }
 
-  // 0. Check in-memory cache first (ZERO network reads!)
+  // 0. Check in-memory cache first
   const cached = usernameCache.get(clean);
   if (cached && Date.now() - cached.cachedAt < USER_CACHE_TTL_MS) {
     firestoreMetrics.recordRead('getUserByUsername', 'users', 'cache_hit', 1, true);
     return cached.user;
   }
 
-  // If in circuit breaker or rate limit, use persistent disk store directly
-  if (isFirestoreRestBackoffActive()) {
-    for (const u of Object.values(diskStore.users)) {
-      if (u.username && u.username.toLowerCase() === clean) {
-        usernameCache.set(clean, { user: u as UserRecord, cachedAt: Date.now() });
-        firestoreMetrics.recordRead('getUserByUsername', 'users', 'cache_hit', 1, true);
-        return u as UserRecord;
-      }
-    }
-    return null;
-  }
-
-  // 1. Try Google Cloud Firestore
-  if (firestoreClient) {
+  // 1. Try Google Cloud Firestore (community_users and users)
+  if (firestoreClient && !isFirestoreRestBackoffActive()) {
     try {
+      // Search community_users first (handles case-insensitive match even if usernameLower wasn't written by older client)
+      const commAll = await firestoreClient.collection('community_users').get();
+      if (!commAll.empty) {
+        for (const d of commAll.docs) {
+          const raw = d.data();
+          if (raw?.username && String(raw.username).trim().toLowerCase() === clean) {
+            const uid = Number(raw.id || d.id);
+            const u: UserRecord = {
+              id: uid,
+              username: String(raw.username),
+              displayName: String(raw.displayName || raw.username),
+              password: typeof raw.password === 'string' ? raw.password : undefined,
+              passwordHash: String(raw.passwordHash || ''),
+              salt: String(raw.salt || ''),
+              role: raw.role || 'user',
+              avatarUrl: raw.avatarUrl || null,
+              warningsCount: Number(raw.warningsCount || 0),
+              verifiedChannels: raw.verifiedChannels && typeof raw.verifiedChannels === 'object' ? raw.verifiedChannels : {},
+              isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || uid === 76),
+              createdAt: Number(raw.createdAt || Date.now()),
+              updatedAt: Number(raw.updatedAt || Date.now()),
+            };
+            usernameCache.set(clean, { user: u, cachedAt: Date.now() });
+            userCache.set(u.id, { user: u, cachedAt: Date.now() });
+            diskStore.users[String(u.id)] = u;
+            return u;
+          }
+        }
+      }
+
       const snap = await firestoreClient
         .collection('users')
         .where('usernameLower', '==', clean)
@@ -514,7 +515,7 @@ export async function getUserByUsername(username: string): Promise<UserRecord | 
   for (const u of Object.values(diskStore.users)) {
     if (u.username && u.username.toLowerCase() === clean) {
       usernameCache.set(clean, { user: u as UserRecord, cachedAt: Date.now() });
-      userCache.set(u.id, { user: u, cachedAt: Date.now() });
+      userCache.set(u.id, { user: u as UserRecord, cachedAt: Date.now() });
       return u as UserRecord;
     }
   }
@@ -525,8 +526,11 @@ export async function getUserByUsername(username: string): Promise<UserRecord | 
 export async function getUsersCount(): Promise<number> {
   if (firestoreClient) {
     try {
-      const snap = await firestoreClient.collection('users').count().get();
-      return snap.data().count;
+      const snap = await firestoreClient.collection('community_users').count().get();
+      const c = snap.data().count;
+      if (c > 0) return c;
+      const uSnap = await firestoreClient.collection('users').count().get();
+      return uSnap.data().count;
     } catch {
       // Ignore and fallback
     }
@@ -535,40 +539,68 @@ export async function getUsersCount(): Promise<number> {
 }
 
 export async function createUserRecord(user: {
+  id?: number;
   username: string;
   displayName: string;
   password: string;
   role?: 'owner' | 'moderator' | 'user' | 'guest';
   avatarUrl?: string | null;
 }): Promise<UserRecord> {
-  const existingCount = await getUsersCount();
+  const existingUsers = await getAllUsersList();
+  const existingCount = existingUsers.length;
+  const cleanUsername = user.username.trim();
+  const requestedId = user.id && Number(user.id) > 0 ? Math.floor(Number(user.id)) : 0;
+  const existingSame = existingUsers.find((u) => u.username.trim().toLowerCase() === cleanUsername.toLowerCase());
+  if (existingSame && !(requestedId > 0 && Number(existingSame.id) === requestedId)) {
+    throw new Error('اسم المستخدم موجود مسبقاً');
+  }
+
   // Self-bootstrap: If zero users exist, first user is automatically Owner
   const role = user.role || (existingCount === 0 ? 'owner' : 'user');
   const now = Date.now();
   const salt = generateSalt();
-  const passwordHash = hashPasswordWithSalt(user.password, salt);
-  const nextId = existingCount === 0 ? 1 : Math.max(1, ...Object.keys(diskStore.users).map(Number)) + 1;
+  const cleanPassword = user.password.trim();
+  const passwordHash = hashPasswordWithSalt(cleanPassword, salt);
+
+  const maxExistingId = Math.max(
+    20,
+    ...existingUsers.map((u) => Number(u.id) || 0),
+    ...Object.keys(diskStore.users).map((k) => Number(k) || 0)
+  );
+  const idTaken = requestedId > 0 && existingUsers.some((u) => Number(u.id) === requestedId && Number(u.id) !== Number(existingSame?.id || 0));
+  const nextId = existingSame
+    ? Number(existingSame.id)
+    : existingCount === 0
+      ? 1
+      : (requestedId > 0 && !idTaken ? requestedId : maxExistingId + 1);
 
   const record: UserRecord = {
     id: nextId,
-    username: user.username.trim(),
-    displayName: user.displayName.trim() || user.username.trim(),
+    username: cleanUsername,
+    displayName: user.displayName.trim() || cleanUsername,
+    password: cleanPassword,
     passwordHash,
     salt,
     role,
     avatarUrl: user.avatarUrl || null,
     warningsCount: 0,
+    verifiedChannels: {},
     createdAt: now,
     updatedAt: now,
   };
 
-  // 1. Try Google Cloud Firestore
+  const firestoreDoc = {
+    ...record,
+    usernameLower: record.username.toLowerCase(),
+  };
+
+  // 1. Write to Google Cloud Firestore (both community_users and users)
   if (firestoreClient) {
     try {
-      await firestoreClient.collection('users').doc(String(record.id)).set({
-        ...record,
-        usernameLower: record.username.toLowerCase(),
-      });
+      await Promise.all([
+        firestoreClient.collection('community_users').doc(String(record.id)).set(firestoreDoc, { merge: true }),
+        firestoreClient.collection('users').doc(String(record.id)).set(firestoreDoc, { merge: true }),
+      ]);
       console.log(`[Salim DB] User ${record.username} (ID: ${record.id}) saved to Firestore.`);
     } catch (err: any) {
       console.warn(`[Salim DB] Firestore write notice for user ${record.id}:`, err.message);
@@ -590,130 +622,314 @@ export async function createUserRecord(user: {
   return record;
 }
 
+export async function updateUserRecord(
+  userId: number,
+  patch: {
+    displayName?: string;
+    password?: string;
+    role?: 'owner' | 'moderator' | 'user' | 'guest';
+    avatarUrl?: string | null;
+    warningsCount?: number;
+    verifiedChannels?: Record<string, string>;
+  }
+): Promise<UserRecord | null> {
+  const existing = await getUserById(userId);
+  if (!existing) return null;
+
+  const now = Date.now();
+  const updated: UserRecord = {
+    ...existing,
+    updatedAt: now,
+  };
+
+  if (patch.displayName !== undefined) {
+    updated.displayName = String(patch.displayName).trim() || existing.displayName;
+  }
+  if (patch.password !== undefined && String(patch.password).trim()) {
+    const cleanPass = String(patch.password).trim();
+    const salt = generateSalt();
+    updated.password = cleanPass;
+    updated.salt = salt;
+    updated.passwordHash = hashPasswordWithSalt(cleanPass, salt);
+  }
+  if (patch.role !== undefined && userId !== 1) {
+    updated.role = patch.role;
+  }
+  if (patch.avatarUrl !== undefined) {
+    updated.avatarUrl = patch.avatarUrl;
+  }
+  if (patch.warningsCount !== undefined) {
+    updated.warningsCount = Number(patch.warningsCount) || 0;
+  }
+  if (patch.verifiedChannels !== undefined && typeof patch.verifiedChannels === 'object') {
+    updated.verifiedChannels = patch.verifiedChannels;
+  }
+
+  const firestoreDoc = {
+    ...updated,
+    usernameLower: updated.username.toLowerCase(),
+  };
+
+  if (firestoreClient) {
+    try {
+      await Promise.all([
+        firestoreClient.collection('community_users').doc(String(userId)).set(firestoreDoc, { merge: true }),
+        firestoreClient.collection('users').doc(String(userId)).set(firestoreDoc, { merge: true }),
+      ]);
+    } catch (err: any) {
+      console.warn(`[Salim DB] Firestore update notice for user ${userId}:`, err?.message || err);
+    }
+  }
+
+  diskStore.users[String(userId)] = updated;
+  saveLocalDiskStore(diskStore);
+  invalidateUserCache(userId);
+
+  if (isSupabaseConfigured()) {
+    supabaseUpsertUser(updated).catch(() => {});
+  }
+
+  return updated;
+}
+
+export async function deleteUserRecord(userId: number): Promise<boolean> {
+  if (userId === 1) {
+    throw new Error('لا يمكن حذف حساب القائد Salim.');
+  }
+
+  if (firestoreClient) {
+    try {
+      await Promise.all([
+        firestoreClient.collection('community_users').doc(String(userId)).delete(),
+        firestoreClient.collection('users').doc(String(userId)).delete(),
+      ]);
+    } catch (err: any) {
+      console.warn(`[Salim DB] Firestore delete notice for user ${userId}:`, err?.message || err);
+    }
+
+    // Also strip deleted user from channel member lists in Firestore
+    try {
+      const chSnap = await firestoreClient.collection('community_channels').get();
+      for (const d of chSnap.docs) {
+        const ch = d.data();
+        const mIds = Array.isArray(ch.memberIds) ? ch.memberIds.map(Number) : [];
+        const aIds = Array.isArray(ch.allowedMemberIds) ? ch.allowedMemberIds.map(Number) : [];
+        if (mIds.includes(userId) || aIds.includes(userId)) {
+          const nextM = mIds.filter((x: number) => x !== userId);
+          const nextA = aIds.filter((x: number) => x !== userId);
+          await Promise.all([
+            firestoreClient.collection('community_channels').doc(d.id).set({ memberIds: nextM, allowedMemberIds: nextA, updatedAt: Date.now() }, { merge: true }),
+            firestoreClient.collection('channels').doc(d.id).set({ memberIds: nextM, allowedMemberIds: nextA, updatedAt: Date.now() }, { merge: true }),
+          ]);
+        }
+      }
+    } catch {}
+  }
+
+  delete diskStore.users[String(userId)];
+  for (const ch of Object.values(diskStore.channels)) {
+    if (ch && Array.isArray(ch.memberIds)) {
+      ch.memberIds = ch.memberIds.filter((x: number) => x !== userId);
+    }
+    if (ch && Array.isArray(ch.allowedMemberIds)) {
+      ch.allowedMemberIds = ch.allowedMemberIds.filter((x: number) => x !== userId);
+    }
+  }
+  saveLocalDiskStore(diskStore);
+  invalidateUserCache(userId);
+  invalidateChannelCache();
+  return true;
+}
+
+const BASELINE_INITIAL_USERS: Array<{
+  id: number;
+  username: string;
+  displayName: string;
+  password: string;
+  role: 'owner' | 'moderator' | 'user' | 'guest';
+  isRestrictedAdmin?: boolean;
+}> = [
+  { id: 1, username: 'Salim', displayName: 'القائد Salim', password: '12345678', role: 'owner' },
+  { id: 76, username: 'Salim0', displayName: 'Salim0', password: '767676', role: 'owner', isRestrictedAdmin: true },
+  { id: 2, username: 'Hani Alqadasi', displayName: 'Hani Alqadasi', password: 'Hani33334', role: 'user' },
+  { id: 3, username: 'Eslam Alqadasi', displayName: 'Eslam Alqadasi', password: '55555555', role: 'user' },
+  { id: 4, username: 'Omar Ali', displayName: 'Omar Ali', password: 'Omar1234', role: 'user' },
+  { id: 5, username: 'Ahmed Saleh', displayName: 'Ahmed Saleh', password: 'Ahmed123', role: 'user' },
+  { id: 6, username: 'Mohammed Ali', displayName: 'Mohammed Ali', password: 'Mo2025', role: 'user' },
+  { id: 7, username: 'Khaled Nasser', displayName: 'Khaled Nasser', password: 'Khaled22', role: 'user' },
+  { id: 8, username: 'Yasser Ahmed', displayName: 'Yasser Ahmed', password: 'Yasser11', role: 'user' },
+  { id: 9, username: 'Ali Hassan', displayName: 'Ali Hassan', password: 'Ali2025', role: 'user' },
+  { id: 10, username: 'Abdullah Salim', displayName: 'Abdullah Salim', password: 'Abd12345', role: 'user' },
+  { id: 11, username: 'Faisal Omar', displayName: 'Faisal Omar', password: 'Faisal88', role: 'user' },
+  { id: 12, username: 'Mahmoud Adel', displayName: 'Mahmoud Adel', password: 'Mahmoud7', role: 'user' },
+  { id: 13, username: 'Tareq Salem', displayName: 'Tareq Salem', password: 'Tareq123', role: 'user' },
+  { id: 14, username: 'Zaid Ahmed', displayName: 'Zaid Ahmed', password: 'Zaid2025', role: 'user' },
+  { id: 15, username: 'Noor Ali', displayName: 'Noor Ali', password: 'Noor1234', role: 'user' },
+  { id: 16, username: 'Amjad Salim', displayName: 'Amjad Salim', password: 'Amjad555', role: 'user' },
+  { id: 17, username: 'Saleh Omar', displayName: 'Saleh Omar', password: 'Saleh2025', role: 'user' },
+  { id: 18, username: 'Nasser Ali', displayName: 'Nasser Ali', password: 'Nasser99', role: 'user' },
+  { id: 19, username: 'Tariq90', displayName: 'Tariq90', password: 'Tariq4141', role: 'user' },
+  { id: 20, username: 'Yazan Salim', displayName: 'Yazan Salim', password: 'Yazan2025', role: 'user' },
+];
+
+let baselineSeedDone = false;
+let baselineSeedPromise: Promise<void> | null = null;
+
+export async function ensureBaselineCloudSeed(): Promise<void> {
+  if (baselineSeedDone || !firestoreClient || isFirestoreRestBackoffActive()) return;
+  if (baselineSeedPromise) return baselineSeedPromise;
+  baselineSeedPromise = (async () => {
+    try {
+      const existingComm = await firestoreClient.collection('community_users').limit(1).get();
+      if (existingComm.empty) {
+        const now = Date.now();
+        const batch = firestoreClient.batch();
+        for (const u of BASELINE_INITIAL_USERS) {
+          const salt = generateSalt();
+          const passwordHash = hashPasswordWithSalt(u.password, salt);
+          const rec: UserRecord = {
+            id: u.id,
+            username: u.username,
+            displayName: u.displayName,
+            password: u.password,
+            passwordHash,
+            salt,
+            role: u.role,
+            avatarUrl: u.id === 1 || u.id === 76 ? '/logo.png' : null,
+            warningsCount: 0,
+            verifiedChannels: {},
+            ...(u.isRestrictedAdmin ? { isRestrictedAdmin: true } : {}),
+            createdAt: now,
+            updatedAt: now,
+          };
+          const docData = { ...rec, usernameLower: rec.username.toLowerCase() };
+          batch.set(firestoreClient.collection('community_users').doc(String(u.id)), docData, { merge: true });
+          batch.set(firestoreClient.collection('users').doc(String(u.id)), docData, { merge: true });
+          diskStore.users[String(u.id)] = rec;
+        }
+        const existingCh = await firestoreClient.collection('community_channels').limit(1).get();
+        if (existingCh.empty) {
+          const defaultMembers = Array.from({ length: 20 }, (_, i) => i + 1);
+          const defaultCh: ChannelRecord = {
+            id: 'channel_default_3000',
+            name: 'دفعة الرحلة إلى 3000$',
+            description: 'القناة الرئيسية لتحدي الوصول إلى 3000$.',
+            isPrivate: true,
+            isOpenPublic: false,
+            password: '3000',
+            imageUrl: null,
+            storagePath: null,
+            visibility: 'visible',
+            allowedMemberIds: defaultMembers,
+            memberIds: defaultMembers,
+            createdAt: now,
+            updatedAt: now,
+          };
+          batch.set(firestoreClient.collection('community_channels').doc(defaultCh.id), defaultCh, { merge: true });
+          batch.set(firestoreClient.collection('channels').doc(defaultCh.id), defaultCh, { merge: true });
+          diskStore.channels[defaultCh.id] = defaultCh;
+        }
+        await batch.commit();
+        saveLocalDiskStore(diskStore);
+        console.log('[Salim DB] Seeded initial baseline users and default channel into Cloud Firestore.');
+      }
+      baselineSeedDone = true;
+    } catch (err: any) {
+      console.warn('[Salim DB] Baseline cloud seed notice:', err?.message || err);
+    } finally {
+      baselineSeedPromise = null;
+    }
+  })();
+  return baselineSeedPromise;
+}
+
 export async function getAllUsersList(): Promise<Omit<UserRecord, 'passwordHash' | 'salt'>[]> {
-  // 0. Check memory cache first (ZERO network reads!)
+  await ensureBaselineCloudSeed();
+
+  // 0. Check short-lived memory cache first
   if (cachedAllUsers && Date.now() - cachedAllUsers.cachedAt < ALL_USERS_CACHE_TTL_MS) {
     firestoreMetrics.recordRead('getAllUsersList', 'users', 'cache_hit', cachedAllUsers.users.length, true);
     return cachedAllUsers.users;
   }
 
   const results: Record<string, Omit<UserRecord, 'passwordHash' | 'salt'>> = {};
+  let firestoreUsersAuthoritative = false;
 
-  // If in circuit breaker or rate limit, return directly from persistent disk store!
-  if (isFirestoreRestBackoffActive()) {
-    for (const [id, d] of Object.entries(diskStore.users)) {
-      results[id] = {
-        id: d.id,
-        username: d.username,
-        displayName: d.displayName,
-        role: d.role,
-        avatarUrl: d.avatarUrl,
-        warningsCount: d.warningsCount,
-        createdAt: d.createdAt,
-        updatedAt: d.updatedAt,
-      };
+  if (firestoreClient && !isFirestoreRestBackoffActive()) {
+    try {
+      // community_users is canonical across web & APK clients
+      const commSnap = await firestoreClient.collection('community_users').get();
+      if (!commSnap.empty) {
+        firestoreUsersAuthoritative = true;
+        commSnap.forEach((doc: any) => {
+          const d = doc.data();
+          const uid = Number(d.id || doc.id);
+          if (!uid || uid <= 0 || uid >= 9000000) return;
+          results[String(uid)] = {
+            id: uid,
+            username: d.username,
+            displayName: d.displayName || d.username,
+            role: uid === 1 ? 'owner' : (d.role || 'user'),
+            avatarUrl: d.avatarUrl || null,
+            warningsCount: Number(d.warningsCount || 0),
+            verifiedChannels: d.verifiedChannels || {},
+            isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76),
+            createdAt: Number(d.createdAt || Date.now()),
+            updatedAt: Number(d.updatedAt || Date.now()),
+          };
+        });
+        firestoreMetrics.recordRead('getAllUsersList', 'community_users', 'getDocs', commSnap.size, false);
+      } else {
+        const snap = await firestoreClient.collection('users').get();
+        if (!snap.empty) {
+          firestoreUsersAuthoritative = true;
+          snap.forEach((doc: any) => {
+            const d = doc.data();
+            const uid = Number(d.id || doc.id);
+            if (!uid || uid <= 0 || uid >= 9000000) return;
+            results[String(uid)] = {
+              id: uid,
+              username: d.username,
+              displayName: d.displayName || d.username,
+              role: uid === 1 ? 'owner' : (d.role || 'user'),
+              avatarUrl: d.avatarUrl || null,
+              warningsCount: Number(d.warningsCount || 0),
+              verifiedChannels: d.verifiedChannels || {},
+              isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76),
+              createdAt: Number(d.createdAt || Date.now()),
+              updatedAt: Number(d.updatedAt || Date.now()),
+            };
+          });
+          firestoreMetrics.recordRead('getAllUsersList', 'users', 'getDocs', snap.size, false);
+        }
+      }
+    } catch (err: any) {
+      handleFirestoreQuotaOrError(err, 'getAllUsersList', 'community_users');
     }
-    const userList = Object.values(results);
-    cachedAllUsers = { users: userList, cachedAt: Date.now() };
-    firestoreMetrics.recordRead('getAllUsersList', 'users', 'cache_hit', userList.length, true);
-    return userList;
   }
 
-  if (firestoreClient) {
-    try {
-      const snap = await firestoreClient.collection('users').get();
-      snap.forEach((doc: any) => {
-        const d = doc.data();
-        results[doc.id] = {
+  // Only fall back to diskStore if Firestore didn't return an authoritative list
+  if (!firestoreUsersAuthoritative) {
+    for (const [id, d] of Object.entries(diskStore.users)) {
+      if (!results[id]) {
+        results[id] = {
           id: d.id,
           username: d.username,
           displayName: d.displayName,
           role: d.role,
           avatarUrl: d.avatarUrl,
           warningsCount: d.warningsCount,
+          verifiedChannels: d.verifiedChannels || {},
+          isRestrictedAdmin: Boolean(d.isRestrictedAdmin || Number(d.id) === 76),
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
         };
-      });
-      firestoreMetrics.recordRead('getAllUsersList', 'users', 'getDocs', snap.size, false);
-    } catch (err: any) {
-      handleFirestoreQuotaOrError(err, 'getAllUsersList', 'users');
-    }
-  }
-
-  for (const [id, d] of Object.entries(diskStore.users)) {
-    if (!results[id]) {
-      results[id] = {
-        id: d.id,
-        username: d.username,
-        displayName: d.displayName,
-        role: d.role,
-        avatarUrl: d.avatarUrl,
-        warningsCount: d.warningsCount,
-        createdAt: d.createdAt,
-        updatedAt: d.updatedAt,
-      };
-    }
-  }
-
-  // Fallback: also read shared Firestore community_users via REST if needed and not backed off
-  if (!isFirestoreRestBackoffActive() && Object.keys(results).length === 0) {
-    try {
-      const dbSeg = encodeURIComponent(databaseId || '(default)');
-      const runQueryUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${dbSeg}/documents:runQuery`;
-      const res = await fetch(runQueryUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: 'community_users' }],
-            limit: 100,
-          },
-        }),
-      });
-
-      if (res.status === 429) {
-        setFirestoreRestBackoff(FIRESTORE_QUOTA_COOLDOWN_MS);
-      } else if (res.ok) {
-        const rows: any[] = await res.json();
-        if (Array.isArray(rows)) {
-          for (const row of rows) {
-            const doc = row?.document;
-            const f = doc?.fields;
-            if (!doc?.name || !f) continue;
-            const docId = String(doc.name).split('/').pop() || '';
-            const uid = Number(f.id?.integerValue || docId || 0);
-            if (!uid || uid <= 0 || uid >= 9000000) continue;
-            const key = String(uid);
-            if (!results[key]) {
-              const rawRole = String(f.role?.stringValue || 'user');
-              const role: UserRecord['role'] =
-                uid === 1
-                  ? 'owner'
-                  : rawRole === 'moderator'
-                    ? 'moderator'
-                    : rawRole === 'guest'
-                      ? 'guest'
-                      : 'user';
-              results[key] = {
-                id: uid,
-                username: String(f.username?.stringValue || `user_${uid}`),
-                displayName: String(f.displayName?.stringValue || f.username?.stringValue || `مستخدم ${uid}`),
-                role,
-                avatarUrl: f.avatarUrl?.stringValue || null,
-                warningsCount: Number(f.warningsCount?.integerValue || 0),
-                createdAt: Number(f.createdAt?.integerValue || Date.now()),
-                updatedAt: Number(f.updatedAt?.integerValue || Date.now()),
-              };
-            }
-          }
-        }
       }
-    } catch {}
+    }
   }
 
-  // Fallback: read from Supabase secondary replica if configured
-  if (isSupabaseConfigured()) {
+  // Fallback: read from Supabase secondary replica if still empty
+  if (Object.keys(results).length === 0 && isSupabaseConfigured()) {
     try {
       const sbUsers = await supabaseGetAllUsers();
       for (const u of sbUsers) {
@@ -725,7 +941,7 @@ export async function getAllUsersList(): Promise<Omit<UserRecord, 'passwordHash'
     } catch {}
   }
 
-  const finalUsers = Object.values(results);
+  const finalUsers = Object.values(results).sort((a, b) => a.id - b.id);
   cachedAllUsers = { users: finalUsers, cachedAt: Date.now() };
   return finalUsers;
 }
@@ -793,21 +1009,35 @@ for (const c of INITIAL_CHANNELS_CONFIG) {
 saveLocalDiskStore(diskStore);
 
 export async function getChannelsForUser(userId: number, role: string): Promise<ChannelRecord[]> {
+  await ensureBaselineCloudSeed();
   const channelMap: Record<string, ChannelRecord> = {};
+  let firestoreChannelsAuthoritative = false;
 
   if (firestoreClient) {
     try {
+      const commSnap = await firestoreClient.collection('community_channels').get();
+      if (!commSnap.empty) {
+        firestoreChannelsAuthoritative = true;
+        commSnap.forEach((doc: any) => {
+          channelMap[doc.id] = doc.data() as ChannelRecord;
+        });
+      }
       const snap = await firestoreClient.collection('channels').get();
-      snap.forEach((doc: any) => {
-        channelMap[doc.id] = doc.data() as ChannelRecord;
-      });
+      if (!snap.empty) {
+        firestoreChannelsAuthoritative = true;
+        snap.forEach((doc: any) => {
+          if (!channelMap[doc.id]) {
+            channelMap[doc.id] = doc.data() as ChannelRecord;
+          }
+        });
+      }
     } catch (err: any) {
       console.warn('[Salim DB] Firestore channels read notice:', err.message);
     }
   }
 
   // Fallback / merge from Supabase secondary replica if configured
-  if (isSupabaseConfigured()) {
+  if (!firestoreChannelsAuthoritative && isSupabaseConfigured()) {
     try {
       const sbChannels = await supabaseGetChannels();
       for (const c of sbChannels) {
@@ -820,10 +1050,12 @@ export async function getChannelsForUser(userId: number, role: string): Promise<
     }
   }
 
-  // Merge with disk store
-  for (const [id, c] of Object.entries(diskStore.channels)) {
-    if (!channelMap[id]) {
-      channelMap[id] = c;
+  // Only fall back to disk store when Firestore had no channels yet
+  if (!firestoreChannelsAuthoritative && Object.keys(channelMap).length === 0) {
+    for (const [id, c] of Object.entries(diskStore.channels)) {
+      if (!channelMap[id]) {
+        channelMap[id] = c;
+      }
     }
   }
 
@@ -861,13 +1093,13 @@ export async function getChannelsForUser(userId: number, role: string): Promise<
 export async function getChannelById(channelId: string): Promise<ChannelRecord | null> {
   if (firestoreClient) {
     try {
-      const doc = await firestoreClient.collection('channels').doc(channelId).get();
-      if (doc.exists) {
-        return doc.data() as ChannelRecord;
-      }
       const commDoc = await firestoreClient.collection('community_channels').doc(channelId).get();
       if (commDoc.exists) {
         return commDoc.data() as ChannelRecord;
+      }
+      const doc = await firestoreClient.collection('channels').doc(channelId).get();
+      if (doc.exists) {
+        return doc.data() as ChannelRecord;
       }
     } catch {}
   }
@@ -929,11 +1161,14 @@ export async function getChannelById(channelId: string): Promise<ChannelRecord |
 export async function saveChannelRecord(channel: ChannelRecord): Promise<void> {
   diskStore.channels[channel.id] = channel;
   saveLocalDiskStore(diskStore);
+  invalidateChannelCache(channel.id);
 
   if (firestoreClient) {
     try {
-      await firestoreClient.collection('channels').doc(channel.id).set(channel, { merge: true });
-      await firestoreClient.collection('community_channels').doc(channel.id).set(channel, { merge: true });
+      await Promise.all([
+        firestoreClient.collection('channels').doc(channel.id).set(channel, { merge: true }),
+        firestoreClient.collection('community_channels').doc(channel.id).set(channel, { merge: true }),
+      ]);
     } catch (err: any) {
       console.warn('[Salim DB] Firestore save channel note:', err?.message);
     }
@@ -950,11 +1185,14 @@ export async function saveChannelRecord(channel: ChannelRecord): Promise<void> {
 export async function deleteChannelRecord(channelId: string): Promise<boolean> {
   delete diskStore.channels[channelId];
   saveLocalDiskStore(diskStore);
+  invalidateChannelCache(channelId);
 
   if (firestoreClient) {
     try {
-      await firestoreClient.collection('channels').doc(channelId).delete();
-      await firestoreClient.collection('community_channels').doc(channelId).delete();
+      await Promise.all([
+        firestoreClient.collection('channels').doc(channelId).delete(),
+        firestoreClient.collection('community_channels').doc(channelId).delete(),
+      ]);
     } catch (err: any) {
       console.warn('[Salim DB] Firestore delete channel note:', err?.message);
     }
@@ -1161,24 +1399,42 @@ export async function getChannelMessages(channelId: string, limitCount = 80, bef
 
   if (firestoreClient) {
     try {
-      let q = firestoreClient
-        .collection('channels')
-        .doc(channelId)
-        .collection('messages')
-        .orderBy('timestamp', 'asc');
+      const [subSnap, flatSnap] = await Promise.all([
+        (() => {
+          let q = firestoreClient
+            .collection('channels')
+            .doc(channelId)
+            .collection('messages')
+            .orderBy('timestamp', 'asc');
+          if (beforeTimestamp && beforeTimestamp > 0) {
+            q = q.where('timestamp', '<', beforeTimestamp);
+          }
+          return q.limitToLast(limitCount).get().catch(() => null);
+        })(),
+        firestoreClient
+          .collection('chat_messages')
+          .where('channelId', '==', channelId)
+          .get()
+          .catch(() => null),
+      ]);
 
-      if (beforeTimestamp && beforeTimestamp > 0) {
-        q = q.where('timestamp', '<', beforeTimestamp);
-      }
-
-      const snap = await q.limitToLast(limitCount).get();
-
-      if (!snap.empty) {
-        snap.docs.forEach((d: any) => {
+      if (subSnap && !subSnap.empty) {
+        subSnap.docs.forEach((d: any) => {
           const m = d.data() as ChannelMessage;
           if (m && m.id && !m.isDeleted) {
             m.timestamp = normalizeMessageTimestamp(m.timestamp, m.id);
             byId.set(m.id, m);
+          }
+        });
+      }
+      if (flatSnap && !flatSnap.empty) {
+        flatSnap.docs.forEach((d: any) => {
+          const m = d.data() as ChannelMessage;
+          if (m && (m.id || d.id) && !m.isDeleted) {
+            const id = String(m.id || d.id);
+            const normTs = normalizeMessageTimestamp(m.timestamp, id);
+            if (beforeTimestamp && beforeTimestamp > 0 && normTs >= beforeTimestamp) return;
+            byId.set(id, { ...m, id, channelId: m.channelId || channelId, timestamp: normTs });
           }
         });
       }
@@ -1240,12 +1496,18 @@ export async function saveChannelMessage(message: ChannelMessage): Promise<void>
 
   if (firestoreClient) {
     try {
-      await firestoreClient
-        .collection('channels')
-        .doc(message.channelId)
-        .collection('messages')
-        .doc(message.id)
-        .set(message);
+      await Promise.all([
+        firestoreClient
+          .collection('channels')
+          .doc(message.channelId)
+          .collection('messages')
+          .doc(message.id)
+          .set(message, { merge: true }),
+        firestoreClient
+          .collection('chat_messages')
+          .doc(message.id)
+          .set(message, { merge: true }),
+      ]);
     } catch (err: any) {
       console.warn('[Salim DB] Firestore message write notice:', err.message);
     }
@@ -1297,9 +1559,13 @@ export async function toggleChannelMessageReaction(
 
   if (!msg && firestoreClient) {
     try {
-      const snap = await firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).get();
-      if (snap.exists) {
-        msg = snap.data() as ChannelMessage;
+      const [snap, flatSnap] = await Promise.all([
+        firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).get(),
+        firestoreClient.collection('chat_messages').doc(messageId).get(),
+      ]);
+      const src = snap.exists ? snap : (flatSnap.exists ? flatSnap : null);
+      if (src) {
+        msg = src.data() as ChannelMessage;
         list.push(msg);
       }
     } catch {}
@@ -1329,10 +1595,16 @@ export async function toggleChannelMessageReaction(
 
   if (firestoreClient) {
     try {
-      await firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).set(
-        { reactions },
-        { merge: true }
-      );
+      await Promise.all([
+        firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).set(
+          { reactions },
+          { merge: true }
+        ),
+        firestoreClient.collection('chat_messages').doc(messageId).set(
+          { reactions },
+          { merge: true }
+        ),
+      ]);
     } catch (err: any) {
       console.warn('[Salim DB] Firestore reaction write notice:', err.message);
     }
@@ -1354,9 +1626,13 @@ export async function togglePinChannelMessage(channelId: string, messageId: stri
 
   if (!msg && firestoreClient) {
     try {
-      const snap = await firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).get();
-      if (snap.exists) {
-        msg = snap.data() as ChannelMessage;
+      const [snap, flatSnap] = await Promise.all([
+        firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).get(),
+        firestoreClient.collection('chat_messages').doc(messageId).get(),
+      ]);
+      const src = snap.exists ? snap : (flatSnap.exists ? flatSnap : null);
+      if (src) {
+        msg = src.data() as ChannelMessage;
         list.push(msg);
       }
     } catch {}
@@ -1370,10 +1646,16 @@ export async function togglePinChannelMessage(channelId: string, messageId: stri
 
   if (firestoreClient) {
     try {
-      await firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).set(
-        { isPinned: msg.isPinned },
-        { merge: true }
-      );
+      await Promise.all([
+        firestoreClient.collection('channels').doc(channelId).collection('messages').doc(messageId).set(
+          { isPinned: msg.isPinned },
+          { merge: true }
+        ),
+        firestoreClient.collection('chat_messages').doc(messageId).set(
+          { isPinned: msg.isPinned },
+          { merge: true }
+        ),
+      ]);
     } catch (err: any) {
       console.warn('[Salim DB] Firestore pin write notice:', err.message);
     }

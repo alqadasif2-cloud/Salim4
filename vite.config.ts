@@ -1,33 +1,13 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import fs from 'fs';
-import express from 'express';
-import {defineConfig} from 'vite';
-import { apiRouter } from './src/server/routes.ts';
+import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
     plugins: [
       react(),
       tailwindcss(),
-      {
-        name: 'api-server-middleware',
-        configureServer(server) {
-          const uploadsDir = path.resolve(__dirname, 'data/uploads');
-          if (!fs.existsSync(uploadsDir)) {
-            fs.mkdirSync(uploadsDir, { recursive: true });
-          }
-          const app = express();
-          app.use(express.json({ limit: '50mb' }));
-          app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-          app.use(express.raw({ type: ['application/octet-stream', 'application/vnd.android.package-archive'], limit: '100mb' }));
-          app.use('/uploads', express.static(uploadsDir));
-          app.use('/api', apiRouter);
-
-          server.middlewares.use(app);
-        },
-      },
     ],
     resolve: {
       alias: {

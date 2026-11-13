@@ -1,13 +1,18 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import {
+  projectId,
+  databaseId,
   getUserById,
   getUserByUsername,
   createUserRecord,
+  updateUserRecord,
+  deleteUserRecord,
   getAllUsersList,
   verifyUserPassword,
+  verifyUserCredential,
   getChannelsForUser,
   getChannelById,
   saveChannelRecord,
@@ -47,7 +52,7 @@ import {
   authenticateToken,
   requireAuth,
   requireRole,
-  AuthUser,
+  type AuthUser,
 } from './auth.ts';
 import {
   registerDeviceToken,
@@ -149,7 +154,7 @@ apiRouter.post('/auth/session-token', async (req: Request, res: Response) => {
         userRecord = await getUserById(76);
       } else {
         const candidate = await getUserByUsername(String(username).trim());
-        if (candidate && verifyUserPassword(password, candidate.passwordHash, candidate.salt)) {
+        if (candidate && verifyUserCredential(String(password), candidate)) {
           userRecord = candidate;
         }
       }
@@ -197,7 +202,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       candidate = await getUserById(76);
     } else {
       const found = await getUserByUsername(cleanUser);
-      if (found && verifyUserPassword(cleanPass, found.passwordHash, found.salt)) {
+      if (found && verifyUserCredential(cleanPass, found)) {
         candidate = found;
       }
     }
@@ -225,7 +230,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
 
 apiRouter.post('/auth/register', async (req: Request, res: Response) => {
   try {
-    const { username, password, displayName, role } = req.body;
+    const { id, username, password, displayName, role } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبان' });
     }
@@ -233,6 +238,7 @@ apiRouter.post('/auth/register', async (req: Request, res: Response) => {
     const userRole: 'owner' | 'moderator' | 'user' | 'guest' =
       role === 'owner' || role === 'moderator' || role === 'guest' ? role : 'user';
     const created = await createUserRecord({
+      id: id ? Number(id) : undefined,
       username: String(username).trim(),
       password: String(password).trim(),
       displayName: displayName ? String(displayName).trim() : String(username).trim(),
@@ -275,6 +281,59 @@ apiRouter.get('/users', async (req: Request, res: Response) => {
   }
 });
 
+apiRouter.post('/users', async (req: Request, res: Response) => {
+  try {
+    const { id, username, password, displayName, role, avatarUrl } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبان' });
+    }
+    const userRole: 'owner' | 'moderator' | 'user' | 'guest' =
+      role === 'owner' || role === 'moderator' || role === 'guest' ? role : 'user';
+    const created = await createUserRecord({
+      id: id ? Number(id) : undefined,
+      username: String(username).trim(),
+      password: String(password).trim(),
+      displayName: displayName ? String(displayName).trim() : String(username).trim(),
+      role: userRole,
+      avatarUrl: avatarUrl || null,
+    });
+    const { passwordHash: _ph, salt: _s, ...safeUser } = created;
+    return res.json({ success: true, user: safeUser });
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'فشل إنشاء المستخدم' });
+  }
+});
+
+apiRouter.put('/users/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ error: 'معرف المستخدم غير صالح' });
+    }
+    const updated = await updateUserRecord(userId, req.body || {});
+    if (!updated) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+    const { passwordHash: _ph, salt: _s, ...safeUser } = updated;
+    return res.json({ success: true, user: safeUser });
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'فشل تحديث المستخدم' });
+  }
+});
+
+apiRouter.delete('/users/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ error: 'معرف المستخدم غير صالح' });
+    }
+    await deleteUserRecord(userId);
+    return res.json({ success: true, message: 'تم حذف المستخدم بنجاح' });
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'فشل حذف المستخدم' });
+  }
+});
+
 // ============================================================================
 // CHANNELS ROUTES
 // ============================================================================
@@ -291,23 +350,30 @@ apiRouter.get('/channels', async (req: Request, res: Response) => {
 
 apiRouter.post('/channels', async (req: Request, res: Response) => {
   try {
-    const user = getEffectiveUser(req);
     const body = req.body || {};
-    const id = body.id || `chan_${Date.now()}`;
+    const id = body.id || `channel_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = Date.now();
+    const rawMembers = Array.isArray(body.memberIds) ? body.memberIds.map(Number).filter((n: number) => !isNaN(n) && n > 0) : [];
+    const memberIds = Array.from(new Set([1, ...rawMembers]));
+    const rawAllowed = Array.isArray(body.allowedMemberIds) ? body.allowedMemberIds.map(Number).filter((n: number) => !isNaN(n) && n > 0) : memberIds;
+    const allowedMemberIds = Array.from(new Set([1, ...rawAllowed]));
+    const visibility = body.visibility === 'hidden' ? 'hidden' : 'visible';
+    const isOpenPublic = visibility !== 'hidden' && Boolean(body.isOpenPublic);
+    const password = isOpenPublic ? '' : String(body.password || '').trim();
 
     const channelRecord = {
       id,
-      name: body.name || 'قناة جديدة',
-      password: body.password || '',
-      isOpenPublic: body.isOpenPublic ?? false,
-      isPrivate: body.isPrivate ?? true,
-      visibility: body.visibility || 'public',
-      allowedMemberIds: Array.isArray(body.allowedMemberIds) ? body.allowedMemberIds : [1],
-      memberIds: Array.isArray(body.memberIds) ? body.memberIds : [1],
+      name: String(body.name || 'قناة جديدة').trim(),
+      password,
+      isOpenPublic,
+      isPrivate: !isOpenPublic,
+      visibility: visibility as 'visible' | 'hidden',
+      allowedMemberIds,
+      memberIds,
       description: body.description || '',
       imageUrl: body.imageUrl || null,
-      displayMemberCount: body.displayMemberCount || 1,
+      storagePath: body.storagePath || null,
+      displayMemberCount: body.displayMemberCount !== undefined ? body.displayMemberCount : null,
       createdAt: body.createdAt || now,
       updatedAt: now,
     };
@@ -335,15 +401,40 @@ apiRouter.put('/channels/:channelId', async (req: Request, res: Response) => {
     if (!channel) return res.status(404).json({ error: 'القناة غير موجودة' });
 
     const body = req.body || {};
+    const nextVisibility = body.visibility !== undefined
+      ? (body.visibility === 'hidden' ? 'hidden' : 'visible')
+      : channel.visibility;
+    const nextOpenPublic = nextVisibility === 'hidden'
+      ? false
+      : (body.isOpenPublic !== undefined ? Boolean(body.isOpenPublic) : channel.isOpenPublic);
+    const nextPassword = nextOpenPublic
+      ? ''
+      : (body.password !== undefined ? String(body.password).trim() : (channel.password || ''));
+
+    let nextMemberIds = channel.memberIds || [1];
+    let nextAllowedIds = channel.allowedMemberIds || [1];
+
+    if (Array.isArray(body.memberIds)) {
+      const cleaned = Array.from(new Set([1, ...body.memberIds.map(Number).filter((n: number) => !isNaN(n) && n > 0)]));
+      nextMemberIds = cleaned;
+      nextAllowedIds = cleaned;
+    }
+    if (Array.isArray(body.allowedMemberIds)) {
+      nextAllowedIds = Array.from(new Set([1, ...body.allowedMemberIds.map(Number).filter((n: number) => !isNaN(n) && n > 0)]));
+    }
+
     const updated = {
       ...channel,
-      name: body.name !== undefined ? body.name : channel.name,
-      password: body.password !== undefined ? body.password : channel.password,
-      isOpenPublic: body.isOpenPublic !== undefined ? body.isOpenPublic : channel.isOpenPublic,
-      isPrivate: body.isPrivate !== undefined ? body.isPrivate : channel.isPrivate,
-      visibility: body.visibility !== undefined ? body.visibility : channel.visibility,
+      name: body.name !== undefined ? String(body.name).trim() : channel.name,
+      password: nextPassword,
+      isOpenPublic: nextOpenPublic,
+      isPrivate: body.isPrivate !== undefined ? Boolean(body.isPrivate) : !nextOpenPublic,
+      visibility: nextVisibility,
+      memberIds: nextMemberIds,
+      allowedMemberIds: nextAllowedIds,
       description: body.description !== undefined ? body.description : channel.description,
-      imageUrl: body.imageUrl !== undefined ? body.imageUrl : channel.imageUrl,
+      imageUrl: body.removeImage ? null : (body.imageUrl !== undefined ? body.imageUrl : channel.imageUrl),
+      storagePath: body.removeImage ? null : (body.storagePath !== undefined ? body.storagePath : channel.storagePath),
       displayMemberCount: body.displayMemberCount !== undefined ? body.displayMemberCount : channel.displayMemberCount,
       updatedAt: Date.now(),
     };
@@ -822,9 +913,9 @@ apiRouter.get('/app-updates/admin-bootstrap', async (_req: Request, res: Respons
       history,
       globalDistribution,
       keyStatus,
-      storageBucket: 'gen-lang-client-0610758071.firebasestorage.app',
-      firebaseProjectId: 'gen-lang-client-0610758071',
-      firestoreDatabaseId: 'ai-studio-c1d1b606-9578-42a6-b7b2-17faaec47f72',
+      storageBucket: `${projectId}.firebasestorage.app`,
+      firebaseProjectId: projectId,
+      firestoreDatabaseId: databaseId,
       githubSettings: ghSettings,
       success: true,
     });
@@ -1084,7 +1175,7 @@ apiRouter.post('/app-updates/publish-firebase', async (req: Request, res: Respon
 
     // Construct authoritative Firebase Storage Download URL
     // Format: https://firebasestorage.googleapis.com/v0/b/<storageBucket>/o/<storagePath>?alt=media
-    const storageBucket = 'gen-lang-client-0610758071.firebasestorage.app';
+    const storageBucket = `${projectId}.firebasestorage.app`;
     const firebaseDownloadUrl =
       clientDownloadUrl ||
       `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(storageBucket)}/o/${encodeURIComponent(storagePath)}?alt=media`;
