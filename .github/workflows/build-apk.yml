@@ -82,6 +82,10 @@ jobs:
             echo "⚠️ Notice: app/sami-signing-key.p12 missing. Gradle will fallback to debug signing."
           fi
           echo "Verifying Android assets:"
+          if [ ! -f app/src/main/assets/index.html ] && [ -f index.html ]; then
+            cp index.html app/src/main/assets/index.html
+          fi
+          test -f app/src/main/assets/index.html
           ls -lh app/src/main/assets/
           ls -lh app/src/main/assets/assets/ || true
 

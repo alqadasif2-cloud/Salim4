@@ -1,17 +1,9 @@
-# Proguard & R8 rules for Sami Trading Challenge Tracker
+# Proguard & R8 rules for Salim Trading Challenge Tracker
 
-# Keep all project application models, database entities, and MainActivity
--keep class com.sami.tradingchallengetracker.data.** { *; }
--keep class com.sami.tradingchallengetracker.util.** { *; }
--keep class com.sami.tradingchallengetracker.ui.** { *; }
+# Keep MainActivity, util classes, and JavaScript bridge
 -keep class com.sami.tradingchallengetracker.MainActivity { *; }
-
-# Keep Room database and DAO implementations
--keep class * extends androidx.room.RoomDatabase { *; }
--keepclassmembers class * {
-    @androidx.room.Dao *;
-    @androidx.room.Entity *;
-}
+-keep class com.sami.tradingchallengetracker.MainActivity$** { *; }
+-keep class com.sami.tradingchallengetracker.util.** { *; }
 
 # Keep JavaScript Interface methods for WebView
 -keepattributes JavascriptInterface
@@ -19,20 +11,15 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 
+# Keep WebViewAssetLoader
+-keep class androidx.webkit.** { *; }
+
 # Keep annotations
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 
-# Firebase Firestore and Storage
+# Firebase Messaging
 -dontwarn com.google.firebase.**
--keep class com.google.firebase.** { *; }
-
-# Media3 ExoPlayer
--dontwarn androidx.media3.**
--keep class androidx.media3.** { *; }
-
-# Coil image loading
--dontwarn coil.**
--keep class coil.** { *; }
+-keep class com.google.firebase.messaging.** { *; }
 
 # Coroutines
 -dontwarn kotlinx.coroutines.**
