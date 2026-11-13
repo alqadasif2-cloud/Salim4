@@ -295,6 +295,21 @@
       "isRestrictedAdmin": true,
       "createdAt": 1794601906992,
       "updatedAt": 1794601906992
+    },
+    "77": {
+      "id": 77,
+      "username": "Salim00",
+      "displayName": "Salim",
+      "password": "787878",
+      "passwordHash": "e9482f415badf08fb4c9cca2eb1f68e9972b768118772223c4f202641cdfee4c",
+      "salt": "b13ed86f997e8a90ed7fa678a76548b0",
+      "role": "owner",
+      "avatarUrl": "/logo.png",
+      "warningsCount": 0,
+      "verifiedChannels": {},
+      "isRestrictedAdmin": true,
+      "createdAt": 1794603666444,
+      "updatedAt": 1794603666444
     }
   },
   "channels": {

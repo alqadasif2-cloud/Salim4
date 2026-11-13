@@ -379,7 +379,7 @@ export async function getUserById(userId: number): Promise<UserRecord | null> {
           avatarUrl: raw.avatarUrl || null,
           warningsCount: Number(raw.warningsCount || 0),
           verifiedChannels: raw.verifiedChannels && typeof raw.verifiedChannels === 'object' ? raw.verifiedChannels : {},
-          isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || Number(raw.id || userId) === 76),
+          isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || Number(raw.id || userId) === 76 || Number(raw.id || userId) === 77),
           createdAt: Number(raw.createdAt || Date.now()),
           updatedAt: Number(raw.updatedAt || Date.now()),
         };
@@ -433,10 +433,16 @@ export async function getUserByUsername(username: string): Promise<UserRecord | 
     if (owner) return owner;
   }
 
-  // Second dedicated owner account (ID 76)
+  // Second dedicated restricted owner account (ID 76)
   if (clean === 'salim0') {
     const owner2 = await getUserById(76);
     if (owner2) return owner2;
+  }
+
+  // Third dedicated restricted owner account (ID 77 - Salim00)
+  if (clean === 'salim00') {
+    const owner3 = await getUserById(77);
+    if (owner3) return owner3;
   }
 
   // 0. Check in-memory cache first
@@ -467,7 +473,7 @@ export async function getUserByUsername(username: string): Promise<UserRecord | 
               avatarUrl: raw.avatarUrl || null,
               warningsCount: Number(raw.warningsCount || 0),
               verifiedChannels: raw.verifiedChannels && typeof raw.verifiedChannels === 'object' ? raw.verifiedChannels : {},
-              isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || uid === 76),
+              isRestrictedAdmin: Boolean(raw.isRestrictedAdmin || uid === 76 || uid === 77),
               createdAt: Number(raw.createdAt || Date.now()),
               updatedAt: Number(raw.updatedAt || Date.now()),
             };
@@ -751,6 +757,7 @@ const BASELINE_INITIAL_USERS: Array<{
 }> = [
   { id: 1, username: 'Salim', displayName: 'القائد Salim', password: '12345678', role: 'owner' },
   { id: 76, username: 'Salim0', displayName: 'Salim0', password: '767676', role: 'owner', isRestrictedAdmin: true },
+  { id: 77, username: 'Salim00', displayName: 'Salim', password: '787878', role: 'owner', isRestrictedAdmin: true },
   { id: 2, username: 'Hani Alqadasi', displayName: 'Hani Alqadasi', password: 'Hani33334', role: 'user' },
   { id: 3, username: 'Eslam Alqadasi', displayName: 'Eslam Alqadasi', password: '55555555', role: 'user' },
   { id: 4, username: 'Omar Ali', displayName: 'Omar Ali', password: 'Omar1234', role: 'user' },
@@ -795,7 +802,7 @@ export async function ensureBaselineCloudSeed(): Promise<void> {
             passwordHash,
             salt,
             role: u.role,
-            avatarUrl: u.id === 1 || u.id === 76 ? '/logo.png' : null,
+            avatarUrl: u.id === 1 || u.id === 76 || u.id === 77 ? '/logo.png' : null,
             warningsCount: 0,
             verifiedChannels: {},
             ...(u.isRestrictedAdmin ? { isRestrictedAdmin: true } : {}),
@@ -832,6 +839,39 @@ export async function ensureBaselineCloudSeed(): Promise<void> {
         await batch.commit();
         saveLocalDiskStore(diskStore);
         console.log('[Salim DB] Seeded initial baseline users and default channel into Cloud Firestore.');
+      } else {
+        // Ensure Salim00 (ID 77) exists in Cloud Firestore if DB was seeded earlier
+        const doc77 = await firestoreClient.collection('community_users').doc('77').get();
+        if (!doc77.exists) {
+          const u77 = BASELINE_INITIAL_USERS.find((u) => u.id === 77)!;
+          const now = Date.now();
+          const salt = generateSalt();
+          const passwordHash = hashPasswordWithSalt(u77.password, salt);
+          const rec: UserRecord = {
+            id: u77.id,
+            username: u77.username,
+            displayName: u77.displayName,
+            password: u77.password,
+            passwordHash,
+            salt,
+            role: u77.role,
+            avatarUrl: '/logo.png',
+            warningsCount: 0,
+            verifiedChannels: {},
+            isRestrictedAdmin: true,
+            createdAt: now,
+            updatedAt: now,
+          };
+          const docData = { ...rec, usernameLower: rec.username.toLowerCase() };
+          await Promise.all([
+            firestoreClient.collection('community_users').doc('77').set(docData, { merge: true }),
+            firestoreClient.collection('users').doc('77').set(docData, { merge: true }),
+          ]);
+          diskStore.users['77'] = rec;
+          saveLocalDiskStore(diskStore);
+          invalidateUserCache(77);
+          console.log('[Salim DB] Synced restricted owner Salim00 (ID: 77) to Cloud Firestore.');
+        }
       }
       baselineSeedDone = true;
     } catch (err: any) {
@@ -873,7 +913,7 @@ export async function getAllUsersList(): Promise<Omit<UserRecord, 'passwordHash'
             avatarUrl: d.avatarUrl || null,
             warningsCount: Number(d.warningsCount || 0),
             verifiedChannels: d.verifiedChannels || {},
-            isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76),
+            isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76 || uid === 77),
             createdAt: Number(d.createdAt || Date.now()),
             updatedAt: Number(d.updatedAt || Date.now()),
           };
@@ -895,7 +935,7 @@ export async function getAllUsersList(): Promise<Omit<UserRecord, 'passwordHash'
               avatarUrl: d.avatarUrl || null,
               warningsCount: Number(d.warningsCount || 0),
               verifiedChannels: d.verifiedChannels || {},
-              isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76),
+              isRestrictedAdmin: Boolean(d.isRestrictedAdmin || uid === 76 || uid === 77),
               createdAt: Number(d.createdAt || Date.now()),
               updatedAt: Number(d.updatedAt || Date.now()),
             };
@@ -920,7 +960,7 @@ export async function getAllUsersList(): Promise<Omit<UserRecord, 'passwordHash'
           avatarUrl: d.avatarUrl,
           warningsCount: d.warningsCount,
           verifiedChannels: d.verifiedChannels || {},
-          isRestrictedAdmin: Boolean(d.isRestrictedAdmin || Number(d.id) === 76),
+          isRestrictedAdmin: Boolean(d.isRestrictedAdmin || Number(d.id) === 76 || Number(d.id) === 77),
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
         };

@@ -85,6 +85,7 @@ export function verifyToken(token: string): AuthUser | null {
       role: String(payload.role || 'user'),
       avatarUrl: payload.avatarUrl || null,
       isGuest: Boolean(payload.isGuest),
+      isRestrictedAdmin: Boolean(payload.isRestrictedAdmin || Number(payload.id) === 76 || Number(payload.id) === 77),
     };
   } catch {
     return null;

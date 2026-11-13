@@ -103,7 +103,7 @@ apiRouter.use((req: Request, _res: Response, next: NextFunction) => {
           displayName: parsed.displayName,
           role: String(parsed.role || 'user'),
           isGuest: Boolean(parsed.isGuest),
-          isRestrictedAdmin: Boolean(parsed.isRestrictedAdmin || parsed.id === 76),
+          isRestrictedAdmin: Boolean(parsed.isRestrictedAdmin || parsed.id === 76 || parsed.id === 77),
         };
         return next();
       }
@@ -152,6 +152,8 @@ apiRouter.post('/auth/session-token', async (req: Request, res: Response) => {
       const cleanP = String(password).trim();
       if ((cleanU === 'salim' || cleanU === 'sami' || cleanU === 'admin' || cleanU === 'salim0') && cleanP === '767676') {
         userRecord = await getUserById(76);
+      } else if (cleanU === 'salim00' && cleanP === '787878') {
+        userRecord = await getUserById(77);
       } else {
         const candidate = await getUserByUsername(String(username).trim());
         if (candidate && verifyUserCredential(String(password), candidate)) {
@@ -173,7 +175,7 @@ apiRouter.post('/auth/session-token', async (req: Request, res: Response) => {
       role: userRecord.role || 'user',
       avatarUrl: userRecord.avatarUrl || null,
       isGuest: false,
-      isRestrictedAdmin: userRecord.id === 76 || Boolean(userRecord.isRestrictedAdmin),
+      isRestrictedAdmin: userRecord.id === 76 || userRecord.id === 77 || Boolean(userRecord.isRestrictedAdmin),
     };
 
     const token = generateToken(authPayload);
@@ -200,6 +202,8 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
 
     if ((cleanUser === 'salim' || cleanUser === 'sami' || cleanUser === 'admin' || cleanUser === 'salim0') && cleanPass === '767676') {
       candidate = await getUserById(76);
+    } else if (cleanUser === 'salim00' && cleanPass === '787878') {
+      candidate = await getUserById(77);
     } else {
       const found = await getUserByUsername(cleanUser);
       if (found && verifyUserCredential(cleanPass, found)) {
@@ -218,7 +222,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       role: candidate.role || 'user',
       avatarUrl: candidate.avatarUrl || null,
       isGuest: false,
-      isRestrictedAdmin: candidate.id === 76 || Boolean(candidate.isRestrictedAdmin),
+      isRestrictedAdmin: candidate.id === 76 || candidate.id === 77 || Boolean(candidate.isRestrictedAdmin),
     };
 
     const token = generateToken(authPayload);
@@ -283,6 +287,9 @@ apiRouter.get('/users', async (req: Request, res: Response) => {
 
 apiRouter.post('/users', async (req: Request, res: Response) => {
   try {
+    if (req.user?.isRestrictedAdmin || req.user?.id === 76 || req.user?.id === 77) {
+      return res.status(403).json({ error: 'غير مصرح لهذا الحساب بإدارة المستخدمين' });
+    }
     const { id, username, password, displayName, role, avatarUrl } = req.body || {};
     if (!username || !password) {
       return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبان' });
@@ -310,6 +317,9 @@ apiRouter.put('/users/:userId', async (req: Request, res: Response) => {
     if (!userId || isNaN(userId)) {
       return res.status(400).json({ error: 'معرف المستخدم غير صالح' });
     }
+    if ((req.user?.isRestrictedAdmin || req.user?.id === 76 || req.user?.id === 77) && req.user.id !== userId) {
+      return res.status(403).json({ error: 'غير مصرح لهذا الحساب بإدارة المستخدمين' });
+    }
     const updated = await updateUserRecord(userId, req.body || {});
     if (!updated) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
@@ -323,6 +333,9 @@ apiRouter.put('/users/:userId', async (req: Request, res: Response) => {
 
 apiRouter.delete('/users/:userId', async (req: Request, res: Response) => {
   try {
+    if (req.user?.isRestrictedAdmin || req.user?.id === 76 || req.user?.id === 77) {
+      return res.status(403).json({ error: 'غير مصرح لهذا الحساب بإدارة المستخدمين' });
+    }
     const userId = parseInt(req.params.userId, 10);
     if (!userId || isNaN(userId)) {
       return res.status(400).json({ error: 'معرف المستخدم غير صالح' });
